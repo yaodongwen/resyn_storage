@@ -1,0 +1,39 @@
+# 数据根目录
+local:
+  output_dir: "/Users/yaodongdong/Desktop/naver/outputs"
+  # Windows示例: "D:/stock_data_pipeline/outputs"
+  # output_dir: "../outputs"
+  # 本地Parquet临时仓库，Windows可写成 "D:/stock_data_pipeline/warehouse"
+  warehouse_dir: "../warehouse"
+  # 历史ID索引缓存
+  index_cache_dir: "../index_cache"
+  # temp_dir: "../tmp"
+server:
+  host: "192.168.1.33"
+  user: "dwyao"
+  data_dir: "/mnt/nas-intern/homes/dwyao/Data/stocklake"
+postgres:
+  host: "192.168.1.33"
+  port: 5432
+  database: "stock_data"
+  user: "stock"
+  password: "Stock2026Secure!"
+storage:
+  local_warehouse:
+      "../warehouse"
+  server_warehouse:
+      "/mnt/nas-intern/homes/dwyao/Data/stocklake"
+  partition:
+    # parquet单文件最大
+    max_rows: 50000
+  compression:
+    # codec: "snappy"
+    codec: "zstd"
+sync:
+  delete_after_upload: true
+  # auto: macOS/Linux优先rsync，Windows自动使用scp
+  # 可手动指定: rsync 或 scp
+  method: auto
+  rsync:
+    enabled: true
+    ssh_port: 22
