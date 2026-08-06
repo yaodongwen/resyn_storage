@@ -176,6 +176,16 @@ def normalize_news(
 
     )
 
+    update_time = normalize_time(
+    
+            raw.get("update_time")
+    
+            or
+    
+            raw.get("update")
+    
+        )
+
 
 
     return {
@@ -199,6 +209,9 @@ def normalize_news(
 
         "publish_time":
             publish_time,
+
+        "update_time":
+            update_time,
 
 
         "title":
@@ -286,6 +299,16 @@ def normalize_comment(
         )
     )
 
+    update_time = normalize_time(
+        raw.get("update_time")
+        or
+        raw.get("update")
+        or
+        raw.get("updated_at")
+        or
+        raw.get("modified_at")
+    )
+
 
     return {
 
@@ -314,6 +337,9 @@ def normalize_comment(
 
         "publish_time":
             publish_time,
+
+        "update_time":
+            update_time,
 
 
         "user_id":
