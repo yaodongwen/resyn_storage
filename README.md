@@ -161,6 +161,15 @@ storage_sync.py
 6.删除outputs
 ```
 
+持续同步模式：
+```
+python storage_sync.py --watch
+```
+
+它会持续扫描 `config.yaml` 里的 `local.output_dir`，只处理最后修改时间超过
+`watch.quiet_seconds` 的稳定 JSON；当稳定文件数量达到 `watch.min_files`，
+或稳定文件总大小达到 `watch.min_bytes`，就打包、上传并清理这一批。
+
 
 # 服务器启动postgre后操作
 使用命令进入postgre

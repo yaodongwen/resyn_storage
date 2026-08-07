@@ -37,3 +37,15 @@ sync:
   rsync:
     enabled: true
     ssh_port: 22
+watch:
+  # 每隔多少秒扫描一次 output_dir
+  interval_seconds: 20
+  # 文件最后修改超过多少秒后才认为写入完成
+  quiet_seconds: 30
+  # 达到任一阈值就处理一批
+  min_files: 100
+  min_bytes: 10485760
+  # 单轮最多处理多少个 JSON，避免一次吃太多
+  max_files_per_batch: 5000
+  # Ctrl-C 退出前是否处理最后一批稳定文件
+  run_on_exit: true

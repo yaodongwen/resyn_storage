@@ -43,7 +43,10 @@ cleaner
 """
 
 
+import argparse
 import logging
+import time
+from pathlib import Path
 import yaml
 
 
@@ -87,7 +90,9 @@ logger = logging.getLogger(__name__)
 # =====================================================
 
 
-def run():
+def run(
+    files=None
+):
 
 
     logging.basicConfig(
@@ -149,11 +154,13 @@ def run():
     # --------------------------------
 
 
-    files = scan_outputs(
+    if files is None:
 
-        output_dir
+        files = scan_outputs(
 
-    )
+            output_dir
+
+        )
 
 
 
@@ -526,21 +533,23 @@ def run():
     # --------------------------------
 
 
-    clean_files(
+    if config.get("sync", {}).get("delete_after_upload", True):
 
-        files,
+        clean_files(
 
-        output_dir
+            files,
 
-    )
+            output_dir
+
+        )
 
 
 
-    logger.info(
+        logger.info(
 
-        "JSON清理完成"
+            "JSON清理完成"
 
-    )
+        )
 
 
 
@@ -556,6 +565,134 @@ def run():
 
 
 
+def get_file_size(file_item):
+    try:
+        return Path(file_item["file_path"]).stat().st_size
+    except OSError:
+        return 0
+
+
+def select_ready_files(files, quiet_seconds, max_files):
+    """
+    只选择一段时间内没有再修改的 JSON，避免读到爬虫正在写入的半截文件。
+    """
+    now = time.time()
+    ready = []
+
+    for item in sorted(files, key=lambda value: value["file_path"]):
+        path = Path(item["file_path"])
+
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+
+        if now - stat.st_mtime < quiet_seconds:
+            continue
+
+        ready.append(item)
+
+        if max_files and len(ready) >= max_files:
+            break
+
+    return ready
+
+
+def batch_reached_threshold(files, min_files, min_bytes):
+    if not files:
+        return False
+
+    total_bytes = sum(get_file_size(item) for item in files)
+    return len(files) >= min_files or total_bytes >= min_bytes
+
+
+def watch():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    with open("config.yaml", "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    output_dir = config["local"]["output_dir"]
+    watch_config = config.get("watch", {})
+
+    interval_seconds = int(watch_config.get("interval_seconds", 20))
+    quiet_seconds = int(watch_config.get("quiet_seconds", 30))
+    min_files = int(watch_config.get("min_files", 100))
+    min_bytes = int(watch_config.get("min_bytes", 10 * 1024 * 1024))
+    max_files = int(watch_config.get("max_files_per_batch", 5000))
+    run_on_exit = bool(watch_config.get("run_on_exit", True))
+
+    logger.info(
+        "===== 持续同步启动：interval=%ss quiet=%ss min_files=%s min_bytes=%s max_files=%s =====",
+        interval_seconds,
+        quiet_seconds,
+        min_files,
+        min_bytes,
+        max_files,
+    )
+
+    try:
+        while True:
+            files = scan_outputs(output_dir)
+            ready_files = select_ready_files(
+                files,
+                quiet_seconds,
+                max_files,
+            )
+            total_bytes = sum(get_file_size(item) for item in ready_files)
+
+            logger.info(
+                "扫描完成：全部JSON=%s，可处理=%s，可处理大小=%.2fMB",
+                len(files),
+                len(ready_files),
+                total_bytes / 1024 / 1024,
+            )
+
+            if batch_reached_threshold(
+                ready_files,
+                min_files,
+                min_bytes,
+            ):
+                try:
+                    run(ready_files)
+                except Exception:
+                    logger.exception("本批同步失败，继续监控下一轮")
+
+            time.sleep(interval_seconds)
+
+    except KeyboardInterrupt:
+        logger.info("收到停止信号")
+
+        if not run_on_exit:
+            return
+
+        files = scan_outputs(output_dir)
+        ready_files = select_ready_files(
+            files,
+            quiet_seconds,
+            max_files,
+        )
+
+        if ready_files:
+            logger.info("退出前处理最后一批：%s", len(ready_files))
+            run(ready_files)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="同步 outputs JSON 到 Parquet、服务器和 PostgreSQL。"
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="持续监控 output_dir，达到阈值后分批同步。",
+    )
+    return parser.parse_args()
+
+
 # =====================================================
 # 入口
 # =====================================================
@@ -564,4 +701,9 @@ def run():
 if __name__=="__main__":
 
 
-    run()
+    args = parse_args()
+
+    if args.watch:
+        watch()
+    else:
+        run()
