@@ -173,6 +173,11 @@ python storage_sync.py --watch
 每批 Parquet 生成后会先写入 `.sync_pending/` 恢复点。如果进程在上传、
 写 PostgreSQL 或清理 JSON 期间中断，下次启动会先恢复这些未完成批次。
 
+如果怀疑增量上传有遗漏，可以手动全量扫描上传一次本地 warehouse：
+```
+python storage_sync.py --full-upload
+```
+
 
 # 服务器启动postgre后操作
 使用命令进入postgre

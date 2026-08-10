@@ -13,6 +13,7 @@ import platform
 import shlex
 import shutil
 import subprocess
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -178,6 +179,52 @@ def build_scp_upload_command(source, config):
     ]
 
 
+def build_rsync_files_from_command(
+    file_list_path,
+    source_root,
+    config,
+):
+    server = config["server"]
+    ssh_port = get_ssh_port(config)
+    source_root = Path(source_root)
+
+    return [
+        "rsync",
+        "-avz",
+        "--partial",
+        "--relative",
+        f"--files-from={file_list_path}",
+        "-e",
+        f"ssh -p {ssh_port}",
+        f"{source_root}/",
+        f'{server["user"]}@{server["host"]}:{server["data_dir"].rstrip("/")}/',
+    ]
+
+
+def build_scp_file_upload_command(
+    file_path,
+    source_root,
+    config,
+):
+    server = config["server"]
+    ssh_port = get_ssh_port(config)
+    source_root = Path(source_root)
+    file_path = Path(file_path)
+    relative_path = file_path.resolve().relative_to(source_root.resolve())
+    remote_file = (
+        f'{server["data_dir"].rstrip("/")}/'
+        f'{relative_path.as_posix()}'
+    )
+
+    return [
+        "scp",
+        "-P",
+        str(ssh_port),
+        str(file_path),
+        f'{server["user"]}@{server["host"]}:{remote_file}',
+    ]
+
+
 def build_scp_download_command(remote_dir, local_dir, config):
     server = config["server"]
     ssh_port = get_ssh_port(config)
@@ -313,6 +360,132 @@ def rsync_upload(
         )
 
         return False
+
+
+def collect_parquet_upload_paths(parquet_files):
+    paths = []
+
+    for item in parquet_files:
+        for key in ("local_file_path", "local_id_index_path"):
+            value = item.get(key)
+
+            if value:
+                paths.append(Path(value))
+
+    return paths
+
+
+def upload_parquet_files(
+    parquet_files,
+    source_dir,
+    config_path="config.yaml",
+):
+    """
+    只上传本批生成的正文 Parquet 和 ID 索引 Parquet。
+    """
+    file_paths = collect_parquet_upload_paths(parquet_files)
+
+    if not file_paths:
+        logger.info("没有需要上传的Parquet文件")
+        return True
+
+    config = load_config(config_path)
+    method = get_sync_method(config)
+    source_root = Path(source_dir)
+
+    missing_files = [
+        str(path)
+        for path in file_paths
+        if not path.exists()
+    ]
+
+    if missing_files:
+        logger.error("本批上传文件不存在：%s", missing_files)
+        return False
+
+    if method == "rsync":
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+        ) as file:
+            file_list_path = file.name
+
+            for path in file_paths:
+                relative_path = path.resolve().relative_to(
+                    source_root.resolve()
+                )
+                file.write(f"./{relative_path.as_posix()}\n")
+
+        command = build_rsync_files_from_command(
+            file_list_path,
+            source_root,
+            config,
+        )
+
+        logger.info(
+            "执行增量rsync，本批文件=%s",
+            len(file_paths),
+        )
+
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except Exception as e:
+            logger.exception("增量上传异常:%s", e)
+            return False
+        finally:
+            try:
+                Path(file_list_path).unlink()
+            except OSError:
+                pass
+
+        if result.stdout:
+            print(result.stdout)
+
+        if result.returncode == 0:
+            logger.info("增量rsync上传成功")
+            return True
+
+        logger.error("增量rsync失败:%s", result.returncode)
+        return False
+
+    if method == "scp":
+        remote_root = config["server"]["data_dir"].rstrip("/")
+
+        for file_path in file_paths:
+            relative_path = file_path.resolve().relative_to(
+                source_root.resolve()
+            )
+            remote_dir = (
+                f"{remote_root}/"
+                f"{relative_path.parent.as_posix()}"
+            )
+
+            if not ensure_remote_directory(remote_dir, config):
+                logger.error("创建远端目录失败:%s", remote_dir)
+                return False
+
+            command = build_scp_file_upload_command(
+                file_path,
+                source_root,
+                config,
+            )
+            result = run_command(command)
+
+            if result.returncode != 0:
+                logger.error("增量scp失败:%s", file_path)
+                return False
+
+        logger.info("增量scp上传成功，本批文件=%s", len(file_paths))
+        return True
+
+    logger.error("不支持的同步方式:%s", method)
+    return False
 
 
 

@@ -77,6 +77,7 @@ from postgres import PostgreSQL
 
 from uploader import (
     rsync_upload,
+    upload_parquet_files,
     fetch_partition_indexes,
 )
 
@@ -430,7 +431,9 @@ def run(
     # --------------------------------
 
 
-    success = rsync_upload(
+    success = upload_parquet_files(
+
+        parquet_files,
 
         warehouse_dir,
 
@@ -658,7 +661,8 @@ def recover_pending_batches(config, output_dir, warehouse_dir):
             remove_pending_batch(manifest_path)
             continue
 
-        success = rsync_upload(
+        success = upload_parquet_files(
+            parquet_files,
             warehouse_dir,
             "config.yaml"
         )
@@ -757,6 +761,33 @@ def watch():
             run(ready_files)
 
 
+def full_upload_once():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    with open("config.yaml", "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    warehouse_dir = config["local"]["warehouse_dir"]
+
+    logger.info(
+        "===== 全量上传开始：%s =====",
+        warehouse_dir,
+    )
+
+    success = rsync_upload(
+        warehouse_dir,
+        "config.yaml",
+    )
+
+    if not success:
+        raise RuntimeError("全量上传失败")
+
+    logger.info("===== 全量上传完成 =====")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="同步 outputs JSON 到 Parquet、服务器和 PostgreSQL。"
@@ -765,6 +796,11 @@ def parse_args():
         "--watch",
         action="store_true",
         help="持续监控 output_dir，达到阈值后分批同步。",
+    )
+    parser.add_argument(
+        "--full-upload",
+        action="store_true",
+        help="全量扫描并上传整个 warehouse_dir，一般用于增量上传后的兜底校准。",
     )
     return parser.parse_args()
 
@@ -779,7 +815,9 @@ if __name__=="__main__":
 
     args = parse_args()
 
-    if args.watch:
+    if args.full_upload:
+        full_upload_once()
+    elif args.watch:
         watch()
     else:
         run()
