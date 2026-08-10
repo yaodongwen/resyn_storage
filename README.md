@@ -170,6 +170,9 @@ python storage_sync.py --watch
 `watch.quiet_seconds` 的稳定 JSON；当稳定文件数量达到 `watch.min_files`，
 或稳定文件总大小达到 `watch.min_bytes`，就打包、上传并清理这一批。
 
+每批 Parquet 生成后会先写入 `.sync_pending/` 恢复点。如果进程在上传、
+写 PostgreSQL 或清理 JSON 期间中断，下次启动会先恢复这些未完成批次。
+
 
 # 服务器启动postgre后操作
 使用命令进入postgre

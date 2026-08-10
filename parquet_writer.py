@@ -27,6 +27,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 from dedup import (
     get_data_type,
     get_partition_key,
@@ -190,7 +196,14 @@ def write_partition_batches(
     data_local_dir.mkdir(parents=True, exist_ok=True)
     index_local_dir.mkdir(parents=True, exist_ok=True)
 
-    for start in range(0, len(records), max_rows):
+    total_batches = (len(records) + max_rows - 1) // max_rows
+
+    for start in tqdm(
+        range(0, len(records), max_rows),
+        total=total_batches,
+        desc=f"写Parquet {data_type}/{stock_code}/{data_date}",
+        unit="file",
+    ):
         batch = records[start : start + max_rows]
         token = create_file_token()
 
@@ -289,7 +302,11 @@ def write_parquet(
         data_type,
         stock_code,
         data_date,
-    ), partition_records in grouped.items():
+    ), partition_records in tqdm(
+        grouped.items(),
+        desc="处理Parquet分区",
+        unit="partition",
+    ):
         results.extend(
             write_partition_batches(
                 records=partition_records,

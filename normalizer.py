@@ -26,6 +26,12 @@ from pathlib import Path
 from datetime import datetime
 import logging
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 
 logger = logging.getLogger(__name__)
 
@@ -502,7 +508,11 @@ def normalize_records(
 
 
 
-    for item in files:
+    for item in tqdm(
+        files,
+        desc="标准化JSON",
+        unit="file",
+    ):
 
 
         try:

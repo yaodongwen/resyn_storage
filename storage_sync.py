@@ -44,10 +44,17 @@ cleaner
 
 
 import argparse
+import json
 import logging
 import time
 from pathlib import Path
 import yaml
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 
 from scanner import scan_outputs
@@ -80,6 +87,8 @@ from cleaner import clean_files
 
 
 logger = logging.getLogger(__name__)
+
+PENDING_DIR = Path(".sync_pending")
 
 
 
@@ -144,6 +153,13 @@ def run(
 
         "../index_cache"
 
+    )
+
+
+    recover_pending_batches(
+        config,
+        output_dir,
+        warehouse_dir,
     )
 
 
@@ -399,6 +415,11 @@ def run(
 
     )
 
+    pending_manifest = save_pending_batch(
+        parquet_files,
+        files,
+    )
+
 
 
 
@@ -457,44 +478,10 @@ def run(
     # --------------------------------
 
 
-    db = PostgreSQL()
-
-
-
     try:
-
-
-        for f in parquet_files:
-
-
-            db.insert_data_file(
-
-                data_type=f["data_type"],
-
-
-                stock_code=f["stock_code"],
-
-
-                data_date=f["data_date"],
-
-
-                file_path=f["file_path"],
-
-
-                id_index_path=f["id_index_path"],
-
-
-                record_count=f["record_count"],
-
-
-                file_size=f["file_size"],
-
-
-                file_sha256=f["file_sha256"]
-
-            )
-
-
+        insert_parquet_file_indexes(
+            parquet_files
+        )
 
         logger.info(
 
@@ -502,26 +489,15 @@ def run(
 
         )
 
-
-
-    except Exception:
-
-
-        logger.exception(
-
-            "数据库写入失败"
-
+        remove_pending_batch(
+            pending_manifest
         )
 
-
+    except Exception:
+        logger.exception(
+            "数据库写入失败"
+        )
         raise
-
-
-
-    finally:
-
-
-        db.close()
 
 
 
@@ -604,6 +580,106 @@ def batch_reached_threshold(files, min_files, min_bytes):
 
     total_bytes = sum(get_file_size(item) for item in files)
     return len(files) >= min_files or total_bytes >= min_bytes
+
+
+def save_pending_batch(parquet_files, source_files):
+    PENDING_DIR.mkdir(parents=True, exist_ok=True)
+    manifest_path = PENDING_DIR / f"pending-{int(time.time() * 1000)}.json"
+
+    payload = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "parquet_files": parquet_files,
+        "source_files": source_files,
+    }
+
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(
+            payload,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    logger.info("写入恢复点：%s", manifest_path)
+    return manifest_path
+
+
+def remove_pending_batch(manifest_path):
+    try:
+        manifest_path.unlink()
+        logger.info("删除恢复点：%s", manifest_path)
+    except FileNotFoundError:
+        pass
+
+
+def insert_parquet_file_indexes(parquet_files):
+    db = PostgreSQL()
+
+    try:
+        for f in tqdm(
+            parquet_files,
+            desc="写PostgreSQL索引",
+            unit="file",
+        ):
+            db.insert_data_file(
+                data_type=f["data_type"],
+                stock_code=f["stock_code"],
+                data_date=f["data_date"],
+                file_path=f["file_path"],
+                id_index_path=f["id_index_path"],
+                record_count=f["record_count"],
+                file_size=f["file_size"],
+                file_sha256=f["file_sha256"],
+            )
+
+    finally:
+        db.close()
+
+
+def recover_pending_batches(config, output_dir, warehouse_dir):
+    if not PENDING_DIR.exists():
+        return
+
+    manifests = sorted(PENDING_DIR.glob("pending-*.json"))
+
+    if not manifests:
+        return
+
+    logger.info("发现未完成批次，开始恢复：%s", len(manifests))
+
+    for manifest_path in manifests:
+        with manifest_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+
+        parquet_files = payload.get("parquet_files", [])
+        source_files = payload.get("source_files", [])
+
+        if not parquet_files:
+            remove_pending_batch(manifest_path)
+            continue
+
+        success = rsync_upload(
+            warehouse_dir,
+            "config.yaml"
+        )
+
+        if not success:
+            logger.error("恢复批次上传失败，保留恢复点：%s", manifest_path)
+            return
+
+        insert_parquet_file_indexes(
+            parquet_files
+        )
+
+        if config.get("sync", {}).get("delete_after_upload", True):
+            clean_files(
+                source_files,
+                output_dir,
+            )
+
+        remove_pending_batch(
+            manifest_path
+        )
 
 
 def watch():
