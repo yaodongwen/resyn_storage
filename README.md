@@ -178,6 +178,24 @@ python storage_sync.py --watch
 python storage_sync.py --full-upload
 ```
 
+同步 `/Users/yaodongdong/Desktop/naver_research` 研究报告项目：
+```
+python research_sync.py
+```
+
+它会上传研究报告 Parquet 到服务器 `stocklake/research/`，并上传 PDF 到
+`stocklake/research_pdf/`。服务器建表和补 PostgreSQL 索引脚本在 `server/`
+目录。
+
+边爬边同步研究报告：
+```
+python research_sync.py --watch
+```
+
+`--watch` 只上传稳定了一段时间的 `.parquet`、`.meta.json` 和 `.pdf` 文件。
+上传成功后会按 `config.yaml` 里的 `research.delete_after_upload` 删除本地已同步文件；
+中断时会通过 `.research_sync_pending/` 恢复未完成批次。
+
 
 # 服务器启动postgre后操作
 使用命令进入postgre

@@ -49,3 +49,16 @@ watch:
   max_files_per_batch: 5000
   # Ctrl-C 退出前是否处理最后一批稳定文件
   run_on_exit: true
+research:
+  project_dir: "/Users/yaodongdong/Desktop/naver_research"
+  warehouse_dir: "/Users/yaodongdong/Desktop/naver_research/warehouse"
+  pdf_dir: "/Users/yaodongdong/Desktop/naver_research/research_spool/pdf"
+  remote_pdf_dir: "/mnt/nas-intern/homes/dwyao/Data/stocklake/research_pdf"
+  sync_pdf: true
+  delete_after_upload: true
+  watch:
+    interval_seconds: 30
+    quiet_seconds: 60
+    min_files: 20
+    min_bytes: 104857600
+    max_files_per_batch: 2000
