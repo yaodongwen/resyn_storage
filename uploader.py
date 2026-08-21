@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
@@ -116,13 +117,25 @@ def get_sync_method(config):
     if method != "auto":
         return method
 
-    if platform.system().lower() == "windows":
-        return "scp"
-
     if shutil.which("rsync"):
         return "rsync"
 
+    if platform.system().lower() == "windows":
+        return "scp"
+
     return "scp"
+
+
+def get_index_sync_method(config):
+    method = config.get("sync", {}).get("method", "auto")
+
+    if method != "auto":
+        return method
+
+    if platform.system().lower() == "windows":
+        return "scp"
+
+    return get_sync_method(config)
 
 
 def run_command(command):
@@ -590,36 +603,160 @@ def remote_directory_exists(
     return result.returncode == 0
 
 
+def iter_index_day_partitions(partitions):
+    days = defaultdict(set)
+
+    for data_type, stock_code, data_date in partitions:
+        days[(data_type, data_date)].add(stock_code)
+
+    return sorted(days.items(), key=lambda item: (item[0][0], item[0][1]))
+
+
+def build_index_day_relative_path(data_type: str, data_date: date) -> Path:
+    return (
+        Path(data_type)
+        / f"year={data_date.year:04d}"
+        / f"month={data_date.month:02d}"
+        / f"day={data_date.day:02d}"
+    )
+
+
+def build_index_stock_relative_path(
+    data_type: str,
+    stock_code: str,
+    data_date: date,
+) -> Path:
+    return (
+        build_index_day_relative_path(data_type, data_date)
+        / f"stock={stock_code}"
+    )
+
+
+def build_index_download_command(
+    remote_dir: str,
+    local_dir: Path,
+    config: dict,
+    method: str,
+) -> list[str] | None:
+    server = config["server"]
+    ssh_port = get_ssh_port(config)
+
+    if method == "rsync":
+        return [
+            "rsync",
+            "-az",
+            "--partial",
+            "-e",
+            f"ssh -p {ssh_port}",
+            (
+                f'{server["user"]}@{server["host"]}:'
+                f'{remote_dir.rstrip("/")}/'
+            ),
+            f"{local_dir}/",
+        ]
+
+    if method == "scp":
+        return build_scp_download_command(
+            remote_dir,
+            local_dir,
+            config,
+        )
+
+    return None
+
+
+def fetch_index_directory(
+    remote_dir: str,
+    local_dir: Path,
+    config: dict,
+    method: str,
+    fallback_to_scp: bool = True,
+) -> tuple[bool, str]:
+    if not remote_directory_exists(remote_dir, config):
+        return True, ""
+
+    local_dir.mkdir(parents=True, exist_ok=True)
+    command = build_index_download_command(
+        remote_dir,
+        local_dir,
+        config,
+        method,
+    )
+
+    if command is None:
+        return False, f"unsupported sync method: {method}"
+
+    result = run_command(command)
+    if result.returncode == 0:
+        return True, result.stdout or ""
+
+    output = result.stdout or ""
+
+    if method == "rsync" and fallback_to_scp:
+        logger.warning(
+            "rsync index fetch failed; retrying with scp: %s\n%s",
+            remote_dir,
+            output,
+        )
+        scp_command = build_index_download_command(
+            remote_dir,
+            local_dir,
+            config,
+            "scp",
+        )
+
+        if scp_command is None:
+            return False, output
+
+        scp_result = run_command(scp_command)
+
+        if scp_result.returncode == 0:
+            return True, scp_result.stdout or ""
+
+        return False, (scp_result.stdout or output)
+
+    return False, output
+
+
 def fetch_partition_indexes(
     partitions: list[tuple[str, str, date]],
     config_path: str = "config.yaml",
 ) -> bool:
     """
-    从服务器仅拉取本次涉及分区的ID索引。
-
-    partitions:
-        [
-            ("comments", "005930", date(2026, 8, 4))
-        ]
+    Fetch historical ID indexes for touched partitions only.
     """
     config = load_config(config_path)
 
     server = config["server"]
-    ssh_port = get_ssh_port(config)
-    method = get_sync_method(config)
+    method = get_index_sync_method(config)
+
+    if method not in ("rsync", "scp"):
+        logger.error("unsupported sync method:%s", method)
+        return False
 
     cache_root = Path(
         config["local"]["index_cache_dir"]
     )
     cache_root.mkdir(parents=True, exist_ok=True)
 
-    for data_type, stock_code, data_date in partitions:
-        relative_dir = (
-            Path(data_type)
-            / f"year={data_date.year:04d}"
-            / f"month={data_date.month:02d}"
-            / f"day={data_date.day:02d}"
-            / f"stock={stock_code}"
+    day_partitions = iter_index_day_partitions(partitions)
+    total_days = len(day_partitions)
+    use_day_fetch = method == "rsync"
+
+    logger.info(
+        "historical ID index sync: partitions=%s, day_dirs=%s, method=%s",
+        len(partitions),
+        total_days,
+        method,
+    )
+
+    for index, ((data_type, data_date), stock_codes) in enumerate(
+        day_partitions,
+        start=1,
+    ):
+        relative_dir = build_index_day_relative_path(
+            data_type,
+            data_date,
         )
 
         remote_dir = (
@@ -628,44 +765,80 @@ def fetch_partition_indexes(
         )
 
         local_dir = cache_root / relative_dir
-        local_dir.mkdir(parents=True, exist_ok=True)
 
-        # 第一次运行时服务器还没有该分区索引，这是正常情况。
-        if not remote_directory_exists(remote_dir, config):
-            continue
+        if index == 1 or index % 100 == 0 or index == total_days:
+            logger.info(
+                "index sync progress: %s/%s day dirs, current=%s, stocks=%s",
+                index,
+                total_days,
+                relative_dir.as_posix(),
+                len(stock_codes),
+            )
 
-        if method == "rsync":
-            command = [
-                "rsync",
-                "-az",
-                "--partial",
-                "-e",
-                f"ssh -p {ssh_port}",
-                (
-                    f'{server["user"]}@{server["host"]}:'
-                    f'{remote_dir.rstrip("/")}/'
-                ),
-                f"{local_dir}/",
-            ]
-        elif method == "scp":
-            command = build_scp_download_command(
+        if use_day_fetch:
+            success, output = fetch_index_directory(
                 remote_dir,
                 local_dir,
                 config,
+                method,
+                fallback_to_scp=False,
             )
-        else:
-            logger.error("不支持的同步方式:%s", method)
-            return False
 
-        result = run_command(command)
+            if success:
+                continue
 
-        if result.returncode != 0:
-            logger.error(
-                "拉取历史ID索引失败：%s\n%s",
+            use_day_fetch = False
+            logger.warning(
+                "day-level index fetch failed; using stock-level fetch from now on: %s\n%s",
                 remote_dir,
-                result.stdout,
+                output,
             )
-            return False
+
+        for stock_index, stock_code in enumerate(sorted(stock_codes), start=1):
+            stock_relative_dir = build_index_stock_relative_path(
+                data_type,
+                stock_code,
+                data_date,
+            )
+            stock_remote_dir = (
+                f'{server["data_dir"].rstrip("/")}'
+                f'/_indexes/{stock_relative_dir.as_posix()}'
+            )
+            stock_local_dir = cache_root / stock_relative_dir
+
+            if (
+                stock_index == 1
+                or stock_index % 1000 == 0
+                or stock_index == len(stock_codes)
+            ):
+                logger.info(
+                    "stock-level index sync progress: %s/%s, current=%s",
+                    stock_index,
+                    len(stock_codes),
+                    stock_relative_dir.as_posix(),
+                )
+
+            stock_success, stock_output = fetch_index_directory(
+                stock_remote_dir,
+                stock_local_dir,
+                config,
+                method,
+                fallback_to_scp=True,
+            )
+
+            if not stock_success:
+                logger.error(
+                    "failed to fetch historical ID index: %s\n%s",
+                    stock_remote_dir,
+                    stock_output,
+                )
+                return False
+
+        logger.info(
+            "stock-level index fetch complete: %s, stocks=%s",
+            remote_dir,
+            len(stock_codes),
+        )
 
     return True
 

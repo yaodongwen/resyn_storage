@@ -228,7 +228,12 @@ def deduplicate_cross_batch(
     result: list[dict[str, Any]] = []
     historical_duplicate_count = 0
 
-    for (data_type, stock_code, data_date), partition_records in grouped.items():
+    total_partitions = len(grouped)
+
+    for index, ((data_type, stock_code, data_date), partition_records) in enumerate(
+        grouped.items(),
+        start=1,
+    ):
         index_dir = build_index_partition_path(
             index_cache_root,
             data_type,
@@ -238,13 +243,16 @@ def deduplicate_cross_batch(
 
         existing_ids = load_existing_ids(index_dir)
 
-        logger.info(
-            "加载历史ID：类型=%s，股票=%s，日期=%s，已有=%s",
-            data_type,
-            stock_code,
-            data_date,
-            len(existing_ids),
-        )
+        if index == 1 or index % 10000 == 0 or index == total_partitions:
+            logger.info(
+                "跨批次去重进度：%s/%s 分区，当前类型=%s，股票=%s，日期=%s，历史ID=%s",
+                index,
+                total_partitions,
+                data_type,
+                stock_code,
+                data_date,
+                len(existing_ids),
+            )
 
         for record in partition_records:
             record_id = get_record_id(record)
